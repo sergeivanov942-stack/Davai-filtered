@@ -1,8 +1,8 @@
 name: Filter RU
 on:
-  workflow_dispatch: # ручной запуск
+  workflow_dispatch:
   schedule:
-    - cron: "0 3 * * *" # каждый день в 03:00
+    - cron: "0 3 * * *"
 
 jobs:
   build:
@@ -12,11 +12,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: { python-version: "3.11" }
+        with:
+          python-version: "3.11"
       - run: pip install geoip2 requests
       - run: |
           curl -L -o GeoLite2-Country.mmdb "https://raw.githubusercontent.com/P3TERX/GeoLite.mmdb/download/GeoLite2-Country.mmdb"
-          ls -lh GeoLite2-Country.mmdb
+          curl -L -o GeoLite2-ASN.mmdb "https://raw.githubusercontent.com/P3TERX/GeoLite.mmdb/download/GeoLite2-ASN.mmdb"
+          ls -lh GeoLite2-*.mmdb
       - run: python filter.py
       - run: |
           git config user.name "bot"
