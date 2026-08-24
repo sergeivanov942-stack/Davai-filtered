@@ -2,13 +2,11 @@ import re, requests, urllib.parse, ipaddress, socket, bisect
 import geoip2.database
 from concurrent.futures import ThreadPoolExecutor
 
-# САМОЕ СТРОГОЕ - Gemini + Netflix банят это
 BLOCK_CC={"RU","IR","CN","BY","KP","SY","CU","VE","SD","IQ","LY","YE","MM","AF","RS"} 
-BLOCK_ASN={14061,20473,24940,16509,16276,63949,396982,8075,16265,60068,208044,45102} # DO,Vultr,Hetzner,AWS,OVH,Linode,Google,MS,Leaseweb,CDN77
-
+BLOCK_ASN={14061,20473,24940,16509,16276,63949,396982,8075,16265,60068,208044,45102}
 TRASH_DOMAINS={"gogocs.xyz","kukuss.top","wagahaha.xyz","workers.dev","pages.dev","railway.app"}
 IR_WORDS={"parsashonam","ebrasha","mohsen","kian","sarina","nika","jadi","freeiran","vip_security"}
-BLOCK_RE=re.compile(r"(🇷🇺|🇮🇷|🇨🇳|🇬🇧|🇧🇾|🇰🇵|\.ru\b|\.ir\b|\.cn\b|yandex|vk\.com|mail\.ru|ok\.ru|gemini|bard)", re.I)
+BLOCK_RE=re.compile(r"(🇷🇺|🇮🇷|🇨🇳|🇬🇧|🇧🇾|🇰🇵|\.ru\b|\.ir\b|\.cn\b|yandex|vk\.com|mail\.ru|ok\.ru)", re.I)
 
 reader_c=geoip2.database.Reader("GeoLite2-Country.mmdb")
 reader_a=geoip2.database.Reader("GeoLite2-ASN.mmdb")
@@ -37,6 +35,15 @@ def get_cc(ip):
 def get_asn(ip):
     try: return reader_a.asn(ip).autonomous_system_number
     except: return None
+def is_alive(host, port):
+    try:
+        # резолвим домен, если надо
+        ip = host.strip("[]")
+        if not re.match(r"^\d+\.\d+\.\d+\.\d+$", ip) and not ":" in ip:
+            ip = socket.gethostbyname(ip)
+        with socket.create_connection((ip, port), timeout=2):
+            return True
+    except: return False
 
 BASE="https://raw.githubusercontent.com/Cepreu54/Davai/refs/heads/main/clean{}.txt"
 all=[]; uniq=set()
@@ -46,7 +53,7 @@ for i in range(1,12):
     for l in txt:
         try:
             h=l.split("@",1)[1].split("?")[0].split("/")[0].split(":")[0].strip("[]")
-            if h and not re.match(r"^\d+\.\d+\.\d+\.\d+$",h): uniq.add(h)
+            if h and not re.match(r"^\d+\.\d+\.\d+\.\d+$",h) and ":" not in h: uniq.add(h)
         except: pass
 cc_map={}; asn_map={}
 def resolve(d):
@@ -69,6 +76,8 @@ for i,txt in all:
             if any(d in low for d in TRASH_DOMAINS): continue
             try:
                 h=line.split("@",1)[1].split("?")[0].split("/")[0].split(":")[0].strip("[]")
+                hp=line.split("@",1)[1].split("?")[0].split("/")[0]
+                port=int(hp.split(":")[1]) if ":" in hp else 443
                 qs=urllib.parse.parse_qs(urllib.parse.urlparse(line).query)
                 sec=qs.get("security",[""])[0].lower()
             except: continue
@@ -79,5 +88,6 @@ for i,txt in all:
             if is_ip and (in_zone(h,RU_IV,RU_S) or in_zone(h,IR_IV,IR_S) or in_zone(h,CN_IV,CN_S)): continue
             if cc in BLOCK_CC: continue
             if asn in BLOCK_ASN: continue
+            if not is_alive(h, port): continue
             f.write(line+"\n"); kept+=1
     print(f"clean{i}.txt {kept}/{len(txt)}")
