@@ -25,7 +25,7 @@ def ip_in_ru(ip_str):
         return i>=0 and n<=v4_intervals[i][1]
     except: return False
 
-RU_MASK_RE=re.compile(r"\.ru\b", re.I) # маскировку режем только *.ru, yandex.net оставляем для РКН
+RU_MASK_RE=re.compile(r"(\.ru\b|yandex\.(ru|net|com|cloud)|yandexcloud\.net|vk\.com|mail\.ru|ok\.ru|dzen\.ru|ya\.ru)", re.I)
 
 def get_cc(ip):
     try: return reader.country(ip.strip("[]")).country.iso_code
