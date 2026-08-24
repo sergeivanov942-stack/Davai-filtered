@@ -3,7 +3,7 @@ import geoip2.database
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 BLOCK_CC={"RU","IR","CN","BY","KP","SY","CU","VE","SD","IQ","LY","YE","MM","AF","RS"} 
-BLOCK_ASN={14061,20473,24940,16509,16276,63949,396982,8075,16265,60068,208044,45102}
+BLOCK_ASN={13335,54113,14061,20473,24940,16509,16276,63949,396982,8075,16265,60068,208044,45102} # +13335 Cloudflare +54113 Fastly
 TRASH_DOMAINS={"gogocs.xyz","kukuss.top","wagahaha.xyz","workers.dev","pages.dev","railway.app"}
 IR_WORDS={"parsashonam","ebrasha","mohsen","kian","sarina","nika","jadi","freeiran","vip_security"}
 BLOCK_RE=re.compile(r"(🇷🇺|🇮🇷|🇨🇳|🇬🇧|🇧🇾|🇰🇵|\.ru\b|\.ir\b|\.cn\b|yandex|vk\.com|mail\.ru|ok\.ru)", re.I)
