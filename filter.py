@@ -1,6 +1,6 @@
 import re, requests, urllib.parse, ipaddress, socket, bisect
 import geoip2.database
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 BLOCK_CC={"RU","IR","CN","BY","KP","SY","CU","VE","SD","IQ","LY","YE","MM","AF","RS"} 
 BLOCK_ASN={14061,20473,24940,16509,16276,63949,396982,8075,16265,60068,208044,45102}
@@ -37,11 +37,10 @@ def get_asn(ip):
     except: return None
 def is_alive(host, port):
     try:
-        # резолвим домен, если надо
         ip = host.strip("[]")
-        if not re.match(r"^\d+\.\d+\.\d+\.\d+$", ip) and not ":" in ip:
+        if not re.match(r"^\d+\.\d+\.\d+\.\d+$", ip) and ":" not in ip:
             ip = socket.gethostbyname(ip)
-        with socket.create_connection((ip, port), timeout=2):
+        with socket.create_connection((ip, port), timeout=1):
             return True
     except: return False
 
@@ -66,28 +65,36 @@ with ThreadPoolExecutor(max_workers=100) as ex:
         cc_map[d]=cc; asn_map[d]=asn
 
 for i,txt in all:
-    kept=0
+    # 1. сначала без alive собираем кандидатов
+    candidates=[]
+    for line in txt:
+        if not line.startswith("vless://"): continue
+        low=urllib.parse.unquote(line).lower()
+        if any(w in low for w in IR_WORDS): continue
+        if BLOCK_RE.search(low): continue
+        if any(d in low for d in TRASH_DOMAINS): continue
+        try:
+            h=line.split("@",1)[1].split("?")[0].split("/")[0].split(":")[0].strip("[]")
+            hp=line.split("@",1)[1].split("?")[0].split("/")[0]
+            port=int(hp.split(":")[1]) if ":" in hp else 443
+            qs=urllib.parse.parse_qs(urllib.parse.urlparse(line).query)
+            sec=qs.get("security",[""])[0].lower()
+        except: continue
+        if sec in ("none",""): continue
+        is_ip=bool(re.match(r"^\d+\.\d+\.\d+\.\d+$",h))
+        cc=get_cc(h) if is_ip else cc_map.get(h)
+        asn=get_asn(h) if is_ip else asn_map.get(h)
+        if is_ip and (in_zone(h,RU_IV,RU_S) or in_zone(h,IR_IV,IR_S) or in_zone(h,CN_IV,CN_S)): continue
+        if cc in BLOCK_CC: continue
+        if asn in BLOCK_ASN: continue
+        candidates.append((line,h,port))
+    # 2. паралл. прозвон только кандидатов
+    alive=set()
+    with ThreadPoolExecutor(max_workers=200) as ex:
+        fut={ex.submit(is_alive, h, p): line for line,h,p in candidates}
+        for f in as_completed(fut):
+            if f.result(): alive.add(fut[f])
     with open(f"clean{i}.txt","w",encoding="utf-8") as f:
-        for line in txt:
-            if not line.startswith("vless://"): continue
-            low=urllib.parse.unquote(line).lower()
-            if any(w in low for w in IR_WORDS): continue
-            if BLOCK_RE.search(low): continue
-            if any(d in low for d in TRASH_DOMAINS): continue
-            try:
-                h=line.split("@",1)[1].split("?")[0].split("/")[0].split(":")[0].strip("[]")
-                hp=line.split("@",1)[1].split("?")[0].split("/")[0]
-                port=int(hp.split(":")[1]) if ":" in hp else 443
-                qs=urllib.parse.parse_qs(urllib.parse.urlparse(line).query)
-                sec=qs.get("security",[""])[0].lower()
-            except: continue
-            if sec in ("none",""): continue
-            is_ip=bool(re.match(r"^\d+\.\d+\.\d+\.\d+$",h))
-            cc=get_cc(h) if is_ip else cc_map.get(h)
-            asn=get_asn(h) if is_ip else asn_map.get(h)
-            if is_ip and (in_zone(h,RU_IV,RU_S) or in_zone(h,IR_IV,IR_S) or in_zone(h,CN_IV,CN_S)): continue
-            if cc in BLOCK_CC: continue
-            if asn in BLOCK_ASN: continue
-            if not is_alive(h, port): continue
-            f.write(line+"\n"); kept+=1
-    print(f"clean{i}.txt {kept}/{len(txt)}")
+        for line in alive:
+            f.write(line+"\n")
+    print(f"clean{i}.txt {len(alive)}/{len(txt)}")
