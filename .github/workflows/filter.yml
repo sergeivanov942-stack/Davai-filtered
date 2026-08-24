@@ -1,0 +1,26 @@
+name: Filter RU
+on:
+  workflow_dispatch: # ручной запуск
+  schedule:
+    - cron: "0 3 * * *" # каждый день в 03:00
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install geoip2 requests
+      - run: |
+          curl -L -o GeoLite2-Country.mmdb "https://raw.githubusercontent.com/P3TERX/GeoLite.mmdb/download/GeoLite2-Country.mmdb"
+          ls -lh GeoLite2-Country.mmdb
+      - run: python filter.py
+      - run: |
+          git config user.name "bot"
+          git config user.email "bot@bot.com"
+          git add clean*.txt
+          git diff --staged --quiet || git commit -m "auto: filtered"
+          git push
