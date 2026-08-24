@@ -2,35 +2,35 @@ import re, requests, urllib.parse, ipaddress, socket, bisect
 import geoip2.database
 from concurrent.futures import ThreadPoolExecutor
 
-BLOCK_CC={"RU","IR","CN","BY","KP","SY","CU","TM","GB"} # убери GB если нужен UK
-BLOCK_ASN={14061,20473,24940,16509,16276,63949,396982,8075} # датацентры
-# убери 8075/396982 если нужен Google/Microsoft
+# САМОЕ СТРОГОЕ - Gemini + Netflix банят это
+BLOCK_CC={"RU","IR","CN","BY","KP","SY","CU","VE","SD","IQ","LY","YE","MM","AF","RS"} 
+BLOCK_ASN={14061,20473,24940,16509,16276,63949,396982,8075,16265,60068,208044,45102} # DO,Vultr,Hetzner,AWS,OVH,Linode,Google,MS,Leaseweb,CDN77
+
+TRASH_DOMAINS={"gogocs.xyz","kukuss.top","wagahaha.xyz","workers.dev","pages.dev","railway.app"}
+IR_WORDS={"parsashonam","ebrasha","mohsen","kian","sarina","nika","jadi","freeiran","vip_security"}
+BLOCK_RE=re.compile(r"(🇷🇺|🇮🇷|🇨🇳|🇬🇧|🇧🇾|🇰🇵|\.ru\b|\.ir\b|\.cn\b|yandex|vk\.com|mail\.ru|ok\.ru|gemini|bard)", re.I)
 
 reader_c=geoip2.database.Reader("GeoLite2-Country.mmdb")
 reader_a=geoip2.database.Reader("GeoLite2-ASN.mmdb")
-RU_MASK_RE=re.compile(r"(\.ru\b|\.ir\b|\.cn\b|yandex|vk\.com|mail\.ru|ok\.ru)", re.I)
 
-# RU/CN/IR зоны для 100% покрытия
 def load_zone(url):
     nets=[]
-    for l in requests.get(url,timeout=30).text.splitlines():
-        try: nets.append(ipaddress.ip_network(l.strip()))
-        except: pass
+    try:
+        for l in requests.get(url,timeout=30).text.splitlines():
+            try: nets.append(ipaddress.ip_network(l.strip()))
+            except: pass
+    except: pass
     iv=sorted([(int(n.network_address),int(n.broadcast_address)) for n in nets if n.version==4])
     return iv, [s for s,_ in iv]
 RU_IV,RU_S = load_zone("https://www.ipdeny.com/ipblocks/data/countries/ru.zone")
 IR_IV,IR_S = load_zone("https://www.ipdeny.com/ipblocks/data/countries/ir.zone")
 CN_IV,CN_S = load_zone("https://www.ipdeny.com/ipblocks/data/countries/cn.zone")
-def in_zone(ip_str, IV, S):
+def in_zone(ip,IV,S):
     try:
-        n=int(ipaddress.ip_address(ip_str.strip("[]")))
+        n=int(ipaddress.ip_address(ip.strip("[]")))
         i=bisect.bisect_right(S,n)-1
         return i>=0 and n<=IV[i][1]
     except: return False
-
-def is_ru_ir_cn_ip(ip):
-    return in_zone(ip,RU_IV,RU_S) or in_zone(ip,IR_IV,IR_S) or in_zone(ip,CN_IV,CN_S)
-
 def get_cc(ip):
     try: return reader_c.country(ip).country.iso_code
     except: return None
@@ -48,7 +48,6 @@ for i in range(1,12):
             h=l.split("@",1)[1].split("?")[0].split("/")[0].split(":")[0].strip("[]")
             if h and not re.match(r"^\d+\.\d+\.\d+\.\d+$",h): uniq.add(h)
         except: pass
-
 cc_map={}; asn_map={}
 def resolve(d):
     try:
@@ -64,18 +63,20 @@ for i,txt in all:
     with open(f"clean{i}.txt","w",encoding="utf-8") as f:
         for line in txt:
             if not line.startswith("vless://"): continue
+            low=urllib.parse.unquote(line).lower()
+            if any(w in low for w in IR_WORDS): continue
+            if BLOCK_RE.search(low): continue
+            if any(d in low for d in TRASH_DOMAINS): continue
             try:
                 h=line.split("@",1)[1].split("?")[0].split("/")[0].split(":")[0].strip("[]")
                 qs=urllib.parse.parse_qs(urllib.parse.urlparse(line).query)
-                sni=qs.get("sni",[""])[0]
+                sec=qs.get("security",[""])[0].lower()
             except: continue
-            # маскировка
-            if RU_MASK_RE.search(sni): continue
-            # проверка IP
-            is_ip = bool(re.match(r"^\d+\.\d+\.\d+\.\d+$",h))
-            cc = get_cc(h) if is_ip else cc_map.get(h)
-            asn = get_asn(h) if is_ip else asn_map.get(h)
-            if is_ip and is_ru_ir_cn_ip(h): continue
+            if sec in ("none",""): continue
+            is_ip=bool(re.match(r"^\d+\.\d+\.\d+\.\d+$",h))
+            cc=get_cc(h) if is_ip else cc_map.get(h)
+            asn=get_asn(h) if is_ip else asn_map.get(h)
+            if is_ip and (in_zone(h,RU_IV,RU_S) or in_zone(h,IR_IV,IR_S) or in_zone(h,CN_IV,CN_S)): continue
             if cc in BLOCK_CC: continue
             if asn in BLOCK_ASN: continue
             f.write(line+"\n"); kept+=1
