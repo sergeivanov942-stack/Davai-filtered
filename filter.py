@@ -1,34 +1,41 @@
-import re, requests, urllib.parse, ipaddress, socket
+import re, requests, urllib.parse, ipaddress, socket, bisect
 import geoip2.database
 from concurrent.futures import ThreadPoolExecutor
-import bisect
 
-GEOIP_DB="GeoLite2-Country.mmdb"
-reader=geoip2.database.Reader(GEOIP_DB)
+BLOCK_CC={"RU","IR","CN","BY","KP","SY","CU","TM","GB"} # убери GB если нужен UK
+BLOCK_ASN={14061,20473,24940,16509,16276,63949,396982,8075} # датацентры
+# убери 8075/396982 если нужен Google/Microsoft
 
-# качаем все RU сети
-RU_ZONE_URL="https://www.ipdeny.com/ipblocks/data/countries/ru.zone"
-nets=[]
-for line in requests.get(RU_ZONE_URL,timeout=30).text.splitlines():
-    try: nets.append(ipaddress.ip_network(line.strip()))
-    except: pass
-# для быстрого поиска делаем интервалы
-v4_intervals=sorted([(int(n.network_address),int(n.broadcast_address)) for n in nets if n.version==4])
-v4_starts=[s for s,_ in v4_intervals]
+reader_c=geoip2.database.Reader("GeoLite2-Country.mmdb")
+reader_a=geoip2.database.Reader("GeoLite2-ASN.mmdb")
+RU_MASK_RE=re.compile(r"(\.ru\b|\.ir\b|\.cn\b|yandex|vk\.com|mail\.ru|ok\.ru)", re.I)
 
-def ip_in_ru(ip_str):
+# RU/CN/IR зоны для 100% покрытия
+def load_zone(url):
+    nets=[]
+    for l in requests.get(url,timeout=30).text.splitlines():
+        try: nets.append(ipaddress.ip_network(l.strip()))
+        except: pass
+    iv=sorted([(int(n.network_address),int(n.broadcast_address)) for n in nets if n.version==4])
+    return iv, [s for s,_ in iv]
+RU_IV,RU_S = load_zone("https://www.ipdeny.com/ipblocks/data/countries/ru.zone")
+IR_IV,IR_S = load_zone("https://www.ipdeny.com/ipblocks/data/countries/ir.zone")
+CN_IV,CN_S = load_zone("https://www.ipdeny.com/ipblocks/data/countries/cn.zone")
+def in_zone(ip_str, IV, S):
     try:
-        ip=ipaddress.ip_address(ip_str.strip("[]"))
-        if ip.version!=4: return False # RU v6 почти нет в листе, можно добавить
-        n=int(ip)
-        i=bisect.bisect_right(v4_starts,n)-1
-        return i>=0 and n<=v4_intervals[i][1]
+        n=int(ipaddress.ip_address(ip_str.strip("[]")))
+        i=bisect.bisect_right(S,n)-1
+        return i>=0 and n<=IV[i][1]
     except: return False
 
-RU_MASK_RE=re.compile(r"(\.ru\b|yandex\.(ru|net|com|cloud)|yandexcloud\.net|vk\.com|mail\.ru|ok\.ru|dzen\.ru|ya\.ru)", re.I)
+def is_ru_ir_cn_ip(ip):
+    return in_zone(ip,RU_IV,RU_S) or in_zone(ip,IR_IV,IR_S) or in_zone(ip,CN_IV,CN_S)
 
 def get_cc(ip):
-    try: return reader.country(ip.strip("[]")).country.iso_code
+    try: return reader_c.country(ip).country.iso_code
+    except: return None
+def get_asn(ip):
+    try: return reader_a.asn(ip).autonomous_system_number
     except: return None
 
 BASE="https://raw.githubusercontent.com/Cepreu54/Davai/refs/heads/main/clean{}.txt"
@@ -40,17 +47,17 @@ for i in range(1,12):
         try:
             h=l.split("@",1)[1].split("?")[0].split("/")[0].split(":")[0].strip("[]")
             if h and not re.match(r"^\d+\.\d+\.\d+\.\d+$",h): uniq.add(h)
-            qs=urllib.parse.parse_qs(urllib.parse.urlparse(l).query)
-            sni=qs.get("sni",[""])[0].split(":")[0]
-            if sni and not re.match(r"^\d+\.\d+\.\d+\.\d+$",sni): uniq.add(sni)
         except: pass
 
-cc_map={}
+cc_map={}; asn_map={}
 def resolve(d):
-    try: return d, get_cc(socket.gethostbyname(d))
-    except: return d, None
+    try:
+        ip=socket.gethostbyname(d)
+        return d, get_cc(ip), get_asn(ip)
+    except: return d, None, None
 with ThreadPoolExecutor(max_workers=100) as ex:
-    for d,cc in ex.map(resolve, uniq): cc_map[d]=cc
+    for d,cc,asn in ex.map(resolve, uniq):
+        cc_map[d]=cc; asn_map[d]=asn
 
 for i,txt in all:
     kept=0
@@ -62,11 +69,14 @@ for i,txt in all:
                 qs=urllib.parse.parse_qs(urllib.parse.urlparse(line).query)
                 sni=qs.get("sni",[""])[0]
             except: continue
-            # 1. RU IP - по зоне + по GeoIP (ловит всех "черлаков" без ручного списка)
-            if re.match(r"^\d+\.\d+\.\d+\.\d+$",h) and (ip_in_ru(h) or get_cc(h)=="RU"): continue
-            if h in cc_map and cc_map[h]=="RU": continue
-            # 2. маскировка *.ru - режем, остальное оставляем
+            # маскировка
             if RU_MASK_RE.search(sni): continue
-            if sni and not re.match(r"^\d+\.\d+\.\d+\.\d+$",sni) and cc_map.get(sni)=="RU": continue
+            # проверка IP
+            is_ip = bool(re.match(r"^\d+\.\d+\.\d+\.\d+$",h))
+            cc = get_cc(h) if is_ip else cc_map.get(h)
+            asn = get_asn(h) if is_ip else asn_map.get(h)
+            if is_ip and is_ru_ir_cn_ip(h): continue
+            if cc in BLOCK_CC: continue
+            if asn in BLOCK_ASN: continue
             f.write(line+"\n"); kept+=1
     print(f"clean{i}.txt {kept}/{len(txt)}")
