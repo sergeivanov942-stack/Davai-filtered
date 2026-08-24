@@ -1,66 +1,57 @@
-# pip install geoip2 requests
-import re, socket, requests, urllib.parse
+import re, requests, urllib.parse, ipaddress
 import geoip2.database
 
 BLOCK_CC = {"RU"}
-GEOIP_DB = "GeoLite2-Country.mmdb" # https://dev.maxmind.com/geoip/geolite2/files
-RU_DOMAIN_RE = re.compile(r"\.ru($|[^a-z0-9])", re.I)
+GEOIP_DB = "GeoLite2-Country.mmdb"
+RU_DOMAIN_RE = re.compile(r"\.ru(\b|/|$|:|\?|#)", re.I)
 
 reader = geoip2.database.Reader(GEOIP_DB)
+ip_re = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$|^\[?[a-f0-9:]+\]?$", re.I)
 
-def get_cc_for_host(host: str):
-    h = host.strip("[]")
-    # пробуем как IP напрямую
-    try:
-        return reader.country(h).country.iso_code
-    except: pass
-    # если домен - резолвим
-    try:
-        ip = socket.gethostbyname(h)
-        return reader.country(ip).country.iso_code
+def is_ip(s): 
+    try: ipaddress.ip_address(s.strip("[]")); return True
+    except: return False
+
+def get_cc_ip(ip):
+    try: return reader.country(ip.strip("[]")).country.iso_code
     except: return None
 
-def is_ru_mask(parsed_qs, netloc_host):
-    # sni=, host=, serverName из query
+def is_ru_mask(qs, host):
     for k in ["sni","host","serverName","authority"]:
-        v = parsed_qs.get(k, [""])[0]
-        if v and RU_DOMAIN_RE.search(v):
+        v = qs.get(k, [""])[0]
+        if v and RU_DOMAIN_RE.search(v.lower()):
             return True
-    if netloc_host and RU_DOMAIN_RE.search(netloc_host):
+    if host and RU_DOMAIN_RE.search(host.lower()):
         return True
     return False
 
-def filter_one(url, out_path):
-    txt = requests.get(url, timeout=30).text.splitlines()
-    kept = 0
-    with open(out_path, "w", encoding="utf-8") as out:
-        for line in txt:
-            line=line.strip()
-            if not line: continue
-            try:
-                # vless://uuid@host:port?params#name
-                after_at = line.split("@",1)[1]
-                host_port = after_at.split("?")[0].split("/")[0]
-                host = host_port.split(":")[0].strip("[]")
-                qs = urllib.parse.parse_qs(urllib.parse.urlparse(line).query)
-            except: continue
-
-            # 1. фильтр по маскировке
-            if is_ru_mask(qs, host):
-                continue
-            # 2. фильтр по IP геолокации хоста
-            cc = get_cc_for_host(host)
-            if cc in BLOCK_CC:
-                continue
-            # SNI тоже может резолвиться в RU IP - доп проверка
-            sni = qs.get("sni",[""])[0]
-            if sni and get_cc_for_host(sni.split(":")[0]) in BLOCK_CC:
-                continue
-
-            out.write(line+"\n")
-            kept+=1
-    print(f"{out_path}: {kept}/{len(txt)}")
-
 BASE = "https://raw.githubusercontent.com/Cepreu54/Davai/refs/heads/main/clean{}.txt"
 for i in range(1,12):
-    filter_one(BASE.format(i), f"clean{i}.txt")
+    url = BASE.format(i)
+    out = f"clean{i}.txt"
+    print(f"Downloading {url}...")
+    txt = requests.get(url, timeout=30).text.splitlines()
+    print(f" {len(txt)} lines")
+    kept=0
+    with open(out, "w", encoding="utf-8") as f:
+        for line in txt:
+            line=line.strip()
+            if not line or not line.startswith("vless://"): continue
+            try:
+                parsed = urllib.parse.urlparse(line)
+                host = line.split("@",1)[1].split("?")[0].split("/")[0].split(":")[0].strip("[]")
+                qs = urllib.parse.parse_qs(parsed.query)
+            except: continue
+            if is_ru_mask(qs, host):
+                continue
+            if is_ip(host) and get_cc_ip(host) in BLOCK_CC:
+                continue
+            # sni тоже проверяем только если это IP (без DNS)
+            sni = qs.get("sni",[""])[0].split(":")[0].strip("[]")
+            if sni and is_ip(sni) and get_cc_ip(sni) in BLOCK_CC:
+                continue
+            f.write(line+"\n")
+            kept+=1
+    print(f" -> {out}: {kept}/{len(txt)} kept")
+
+print("Done")
