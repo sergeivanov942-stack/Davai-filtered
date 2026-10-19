@@ -2,11 +2,12 @@ import re, requests, urllib.parse, ipaddress, socket, bisect
 import geoip2.database
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-BLOCK_CC={"RU","IR","CN","BY","KP","SY","CU","VE","SD","IQ","LY","YE","MM","AF","RS"} 
-BLOCK_ASN={13335,54113,14061,20473,24940,16509,16276,63949,396982,8075,16265,60068,208044,45102} # +13335 Cloudflare +54113 Fastly
+BLOCK_CC={"RU","IR","CN","BY","KP","SY","CU","VE","SD","IQ","LY","YE","MM","AF","RS"}
+BLOCK_ASN={13335,54113,14061,20473,24940,16509,16276,63949,396982,8075,16265,60068,208044,45102}
 TRASH_DOMAINS={"gogocs.xyz","kukuss.top","wagahaha.xyz","workers.dev","pages.dev","railway.app"}
 IR_WORDS={"parsashonam","ebrasha","mohsen","kian","sarina","nika","jadi","freeiran","vip_security"}
-BLOCK_RE=re.compile(r"(🇷🇺|🇮🇷|🇨🇳|🇬🇧|🇧🇾|🇰🇵|\.ru\b|\.ir\b|\.cn\b|yandex|vk\.com|mail\.ru|ok\.ru)", re.I)
+BLOCK_RE=re.compile(r"(🇷🇺|🇮🇷|🇨🇳|🇧🇾|🇰🇵|\.ru\b|\.ir\b|\.cn\b|yandex|vk\.com|mail\.ru|ok\.ru)", re.I)
+US_RE=re.compile(r"(🇺🇸|\[US\]|\bUS\b|United States)",re.I)
 
 reader_c=geoip2.database.Reader("GeoLite2-Country.mmdb")
 reader_a=geoip2.database.Reader("GeoLite2-ASN.mmdb")
@@ -23,6 +24,7 @@ def load_zone(url):
 RU_IV,RU_S = load_zone("https://www.ipdeny.com/ipblocks/data/countries/ru.zone")
 IR_IV,IR_S = load_zone("https://www.ipdeny.com/ipblocks/data/countries/ir.zone")
 CN_IV,CN_S = load_zone("https://www.ipdeny.com/ipblocks/data/countries/cn.zone")
+
 def in_zone(ip,IV,S):
     try:
         n=int(ipaddress.ip_address(ip.strip("[]")))
@@ -65,8 +67,7 @@ with ThreadPoolExecutor(max_workers=100) as ex:
         cc_map[d]=cc; asn_map[d]=asn
 
 for i,txt in all:
-    # 1. сначала без alive собираем кандидатов
-    candidates=[]
+    candidates=[]; blocked=[]
     for line in txt:
         if not line.startswith("vless://"): continue
         low=urllib.parse.unquote(line).lower()
@@ -84,17 +85,34 @@ for i,txt in all:
         is_ip=bool(re.match(r"^\d+\.\d+\.\d+\.\d+$",h))
         cc=get_cc(h) if is_ip else cc_map.get(h)
         asn=get_asn(h) if is_ip else asn_map.get(h)
-        if is_ip and (in_zone(h,RU_IV,RU_S) or in_zone(h,IR_IV,IR_S) or in_zone(h,CN_IV,CN_S)): continue
-        if cc in BLOCK_CC: continue
-        if asn in BLOCK_ASN: continue
+        if is_ip and (in_zone(h,RU_IV,RU_S) or in_zone(h,IR_IV,IR_S) or in_zone(h,CN_IV,CN_S)):
+            blocked.append((line,h,port)); continue
+        if cc in BLOCK_CC or asn in BLOCK_ASN:
+            blocked.append((line,h,port)); continue
         candidates.append((line,h,port))
-    # 2. паралл. прозвон только кандидатов
     alive=set()
     with ThreadPoolExecutor(max_workers=200) as ex:
         fut={ex.submit(is_alive, h, p): line for line,h,p in candidates}
         for f in as_completed(fut):
             if f.result(): alive.add(fut[f])
-    with open(f"clean{i}.txt","w",encoding="utf-8") as f:
-        for line in alive:
-            f.write(line+"\n")
+    if i==11:
+        alive={l for l in alive if US_RE.search(urllib.parse.unquote(l))}
+    old=""
+    try: old=open(f"clean{i}.txt",encoding="utf-8").read()
+    except: pass
+    if alive:
+        with open(f"clean{i}.txt","w",encoding="utf-8") as f:
+            f.write("\n".join(sorted(alive))+"\n")
+    elif old:
+        with open(f"clean{i}.txt","w",encoding="utf-8") as f:
+            f.write(old)
     print(f"clean{i}.txt {len(alive)}/{len(txt)}")
+
+aliveB=set()
+with ThreadPoolExecutor(max_workers=200) as ex:
+    fut={ex.submit(is_alive, h, p): line for line,h,p in blocked}
+    for f in as_completed(fut):
+        if f.result(): aliveB.add(fut[f])
+with open("clean12.txt","w",encoding="utf-8") as f:
+    f.write("\n".join(sorted(aliveB))+"\n")
+print(f"clean12.txt {len(aliveB)}")
