@@ -67,7 +67,7 @@ with ThreadPoolExecutor(max_workers=100) as ex:
         cc_map[d]=cc; asn_map[d]=asn
 
 for i,txt in all:
-    candidates=[]; blocked=[]
+    candidates=[]; blocked=[]; blocked_ru=[]
     for line in txt:
         if not line.startswith("vless://"): continue
         low=urllib.parse.unquote(line).lower()
@@ -85,7 +85,8 @@ for i,txt in all:
         is_ip=bool(re.match(r"^\d+\.\d+\.\d+\.\d+$",h))
         cc=get_cc(h) if is_ip else cc_map.get(h)
         asn=get_asn(h) if is_ip else asn_map.get(h)
-        if is_ip and (in_zone(h,RU_IV,RU_S) or in_zone(h,IR_IV,IR_S) or in_zone(h,CN_IV,CN_S)):
+        if is_ip and in_zone(h,RU_IV,RU_S) or cc=="RU": blocked_ru.append((line,h,port)); continue
+        if is_ip and (in_zone(h,IR_IV,IR_S) or in_zone(h,CN_IV,CN_S)):
             blocked.append((line,h,port)); continue
         if cc in BLOCK_CC or asn in BLOCK_ASN:
             blocked.append((line,h,port)); continue
@@ -113,6 +114,17 @@ with ThreadPoolExecutor(max_workers=200) as ex:
     fut={ex.submit(is_alive, h, p): line for line,h,p in blocked}
     for f in as_completed(fut):
         if f.result(): aliveB.add(fut[f])
+
+aliveRU=set()
+with ThreadPoolExecutor(max_workers=200) as ex:
+    fut={ex.submit(is_alive, h, p): line for line,h,p in blocked_ru}
+    for f in as_completed(fut):
+        if f.result(): aliveRU.add(fut[f])
+
 with open("clean12.txt","w",encoding="utf-8") as f:
     f.write("\n".join(sorted(aliveB))+"\n")
 print(f"clean12.txt {len(aliveB)}")
+
+with open("clean13.txt","w",encoding="utf-8") as f:
+    f.write("\n".join(sorted(aliveRU))+"\n")
+print(f"clean13.txt {len(aliveRU)}")
