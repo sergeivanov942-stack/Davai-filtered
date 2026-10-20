@@ -62,7 +62,6 @@ for src in SOURCES:
         if h and not re.match(r"^\d+\.\d+\.\d+\.\d+$",h) and ":" not in h: uniq.add(h)
         pool.append((l,h))
 pool=list({l:(l,h) for l,h in pool}.values())
-ddo print same asletion
 cc_map={}; asn_map={}
 def resolve(d):
     try:
