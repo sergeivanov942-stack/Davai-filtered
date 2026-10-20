@@ -98,29 +98,42 @@ with ThreadPoolExecutor(max_workers=200) as ex:
     fut={ex.submit(is_alive, h, p): line for line,h,p in candidates}
     for f in as_completed(fut):
         if f.result(): alive.add(fut[f])
-with open("clean_main.txt","w",encoding="utf-8") as f:
-    f.write("\n".join(sorted(alive))+"\n")
-print(f"clean_main.txt {len(alive)}/{len(pool)} (источников: {total})")
 
 usa={l for l in alive if US_RE.search(urllib.parse.unquote(l))}
-with open("clean_us.txt","w",encoding="utf-8") as f:
-    f.write("\n".join(sorted(usa))+"\n")
-print(f"clean_us.txt {len(usa)}")
+rest=alive-usa
+al=sorted(rest)
+if al:
+    n=(len(al)+9)//10
+    for i in range(10):
+        part=al[i*n:(i+1)*n]
+        if part:
+            with open(f"clean{i+1}.txt","w",encoding="utf-8") as f:
+                f.write("\n".join(part)+"\n")
+    print(f"clean1-10: {len(al)} поровну по {n} (пул {len(pool)}, US вычтены: {len(usa)})")
+else:
+    print("живых чистых=0, clean1-10 не тронуты")
+
+if usa:
+    with open("clean11.txt","w",encoding="utf-8") as f:
+        f.write("\n".join(sorted(usa))+"\n")
+print(f"clean11.txt {len(usa)}")
 
 aliveB=set()
 with ThreadPoolExecutor(max_workers=200) as ex:
     fut={ex.submit(is_alive, h, p): line for line,h,p in blocked}
     for f in as_completed(fut):
         if f.result(): aliveB.add(fut[f])
-with open("clean_blocked.txt","w",encoding="utf-8") as f:
-    f.write("\n".join(sorted(aliveB))+"\n")
-print(f"clean_blocked.txt {len(aliveB)}")
+if aliveB:
+    with open("clean12.txt","w",encoding="utf-8") as f:
+        f.write("\n".join(sorted(aliveB))+"\n")
+print(f"clean12.txt {len(aliveB)}")
 
 aliveRU=set()
 with ThreadPoolExecutor(max_workers=200) as ex:
     fut={ex.submit(is_alive, h, p): line for line,h,p in blocked_ru}
     for f in as_completed(fut):
         if f.result(): aliveRU.add(fut[f])
-with open("clean_ru.txt","w",encoding="utf-8") as f:
-    f.write("\n".join(sorted(aliveRU))+"\n")
-print(f"clean_ru.txt {len(aliveRU)}")
+if aliveRU:
+    with open("clean13.txt","w",encoding="utf-8") as f:
+        f.write("\n".join(sorted(aliveRU))+"\n")
+print(f"clean13.txt {len(aliveRU)}")
