@@ -24,7 +24,7 @@ try: sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 except Exception: pass
 
 SRC_DIR = sys.argv[1] if len(sys.argv) > 1 else "."
-SB_BIN = os.environ.get("SING_BOX_BIN") or ("sing-box.exe" if os.name == "nt" else os.path.abspath("sing-box"))
+SB_BIN = os.environ.get("SING_BOX_BIN") or ("sing-box.exe" if os.name == "nt" else "sing-box")
 TIMEOUT = float(os.environ.get("E2E_TIMEOUT", "5"))
 BATCH = int(os.environ.get("E2E_BATCH", "1000"))
 CONC = int(os.environ.get("E2E_CONCURRENCY", "200"))
