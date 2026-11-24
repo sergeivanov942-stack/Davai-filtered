@@ -19,9 +19,18 @@ jobs:
           curl -L -o GeoLite2-ASN.mmdb "https://raw.githubusercontent.com/P3TERX/GeoLite.mmdb/download/GeoLite2-ASN.mmdb"
           ls -lh GeoLite2-*.mmdb
       - run: python filter.py
+      - name: End-to-end protocol test (sing-box, same core as Karing)
+        run: |
+          SB_VER=$(curl -fsSL https://api.github.com/repos/SagerNet/sing-box/releases/latest | python -c "import sys,json;print(json.load(sys.stdin)['tag_name'].lstrip('v'))")
+          echo "sing-box ${SB_VER}"
+          curl -fsSL -o /tmp/sb.tgz "https://github.com/SagerNet/sing-box/releases/download/v${SB_VER}/sing-box-${SB_VER}-linux-amd64.tar.gz"
+          tar -xzf /tmp/sb.tgz -C /tmp
+          sudo mv /tmp/sing-box-${SB_VER}-linux-amd64/sing-box /usr/local/bin/sing-box
+          sing-box version
+          python protocol_test.py .
       - run: |
           git config user.name "bot"
           git config user.email "bot@bot.com"
-          git add clean*.txt
-          git diff --staged --quiet || git commit -m "auto: filtered"
+          git add clean*.txt dead.txt
+          git diff --staged --quiet || git commit -m "auto: filtered + e2e verified"
           git push
