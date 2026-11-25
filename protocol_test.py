@@ -35,6 +35,7 @@ BASE_PORT = int(os.environ.get("E2E_BASE_PORT", "20000"))
 LIMIT = int(os.environ.get("E2E_LIMIT", "0"))
 TEST_URL = os.environ.get("E2E_URL", "http://www.gstatic.com/generate_204")
 CONVERT_ONLY = os.environ.get("E2E_CONVERT_ONLY", "") == "1"
+RETRY = os.environ.get("E2E_RETRY", "1") == "1"  # re-test failures once
 
 UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 FP_OK = {"chrome", "firefox", "safari", "ios", "android", "edge", "360", "qq", "random", "randomized"}
@@ -420,12 +421,13 @@ def run_batch(batch):
             for f in as_completed(futs):
                 ok, lat = f.result()
                 res[futs[f]] = lat if ok else None
-        # one retry for failures (flaky networks)
-        retry = [(i, (line, ob)) for i, (line, ob) in enumerate(batch) if res.get(line) is None]
-        for i, (line, ob) in retry:
-            ok, lat = test_port(BASE_PORT + i)
-            if ok:
-                res[line] = lat
+        # one retry for failures (flaky networks); E2E_RETRY=0 skips it
+        if RETRY:
+            retry = [(i, (line, ob)) for i, (line, ob) in enumerate(batch) if res.get(line) is None]
+            for i, (line, ob) in retry:
+                ok, lat = test_port(BASE_PORT + i)
+                if ok:
+                    res[line] = lat
         # AI Studio region gate: exit country must be supported
         ai_dead = set()
         if AI_OK:
