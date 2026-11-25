@@ -381,15 +381,18 @@ def start_sb(cfg_path, err_path):
 
 
 def run_batch(batch):
-    """batch: list of (line, outbound). Returns {line: latency or None}."""
+    """batch: list of (line, group, outbound). Returns ({line: latency or None}, ai_dead set).
+
+    Group "ru" is exempt from the AI region check: Russian exits never pass
+    it, but these servers are useful for RU services."""
     n = len(batch)
-    for i, (_, ob) in enumerate(batch):
+    for i, (_, _, ob) in enumerate(batch):
         ob["tag"] = "o%d" % i
     cfg = {
         "log": {"level": "error"},
         "inbounds": [{"type": "socks", "tag": "in%d" % i, "listen": "127.0.0.1",
                       "listen_port": BASE_PORT + i} for i in range(n)],
-        "outbounds": [ob for _, ob in batch],
+        "outbounds": [ob for _, _, ob in batch],
         "route": {"rules": [{"inbound": "in%d" % i, "outbound": "o%d" % i} for i in range(n)]},
     }
     fd, cfg_path = tempfile.mkstemp(suffix=".json")
@@ -415,25 +418,26 @@ def run_batch(batch):
             proc = None
             time.sleep(2)
         if proc is None or proc.poll() is not None:
-            return {line: None for line, _ in batch}, set()
+            return {line: None for line, _, _ in batch}, set()
         with ThreadPoolExecutor(max_workers=CONC) as ex:
-            futs = {ex.submit(test_port, BASE_PORT + i): line for i, (line, _) in enumerate(batch)}
+            futs = {ex.submit(test_port, BASE_PORT + i): line for i, (line, _, _) in enumerate(batch)}
             for f in as_completed(futs):
                 ok, lat = f.result()
                 res[futs[f]] = lat if ok else None
         # one retry for failures (flaky networks); E2E_RETRY=0 skips it
         if RETRY:
-            retry = [(i, (line, ob)) for i, (line, ob) in enumerate(batch) if res.get(line) is None]
-            for i, (line, ob) in retry:
+            retry = [(i, line) for i, (line, _, _) in enumerate(batch) if res.get(line) is None]
+            for i, line in retry:
                 ok, lat = test_port(BASE_PORT + i)
                 if ok:
                     res[line] = lat
-        # AI Studio region gate: exit country must be supported
+        # AI Studio region gate: exit country must be supported (group "ru" exempt)
         ai_dead = set()
         if AI_OK:
             with ThreadPoolExecutor(max_workers=CONC) as ex:
                 futs = {ex.submit(check_ai, BASE_PORT + i): line
-                        for i, (line, _) in enumerate(batch) if res.get(line) is not None}
+                        for i, (line, g, _) in enumerate(batch)
+                        if res.get(line) is not None and g != "ru"}
                 for f in as_completed(futs):
                     if f.result() is False:
                         res[futs[f]] = None
@@ -520,7 +524,7 @@ def main():
     for i in range(0, len(entries), BATCH):
         chunk = entries[i:i + BATCH]
         print("batch %d-%d ..." % (i, i + len(chunk)))
-        rb_res, rb_ai = run_batch([(l, ob) for l, _, ob in chunk])
+        rb_res, rb_ai = run_batch(chunk)
         for line, lat in rb_res.items():
             if lat is not None:
                 ok_lat[line] = lat
