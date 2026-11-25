@@ -547,6 +547,8 @@ def main():
     today = datetime.date.today().isoformat()
     hist = load_history()
     for line, hkey in line_key.items():
+        if line in region_blocked or group_of.get(line) == "ru":
+            continue  # clean13 is a flat list - no reliability tracking needed
         rec = hist.setdefault(hkey, {"rec": [], "last": today})
         rec["rec"] = (rec.get("rec") or [])[-19:] + [1 if line in ok_lat or line in region_blocked else 0]
         rec["last"] = today
