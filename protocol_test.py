@@ -16,8 +16,11 @@ Env:
     E2E_LIMIT      test only first N configs per group (0 = all), for smoke runs
     E2E_URL        probe url (default http://www.gstatic.com/generate_204)
     E2E_CONVERT_ONLY  1 = only run the converter and print stats, no testing
+    E2E_AISTUDIO   1/0 - drop servers whose exit region is not supported
+                   by Google AI Studio (default 1)
 """
 import os, re, sys, json, time, socket, shutil, subprocess, tempfile, urllib.parse
+import urllib.request, unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 try: sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -36,6 +39,142 @@ CONVERT_ONLY = os.environ.get("E2E_CONVERT_ONLY", "") == "1"
 UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 FP_OK = {"chrome", "firefox", "safari", "ios", "android", "edge", "360", "qq", "random", "randomized"}
 FLOW_OK = {"xtls-rprx-vision"}
+
+# --- Google AI Studio region gate -------------------------------------------
+# A server whose exit country is NOT in Google's "available regions" list shows
+# the available-regions page instead of AI Studio -> useless -> dead.txt.
+AI_CHECK = os.environ.get("E2E_AISTUDIO", "1") == "1"
+REGIONS_URL = "https://aistudio.google.com/docs/available-regions"
+TRACE_URL = "https://www.cloudflare.com/cdn-cgi/trace"
+AI_CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ai_regions.cache.json")
+AI_OK = set()  # filled by load_ai_regions()
+
+# name as printed on the page -> ISO-3166 alpha-2 (Cloudflare trace "loc=")
+AI_NAME2ISO = [
+    ("Albania","AL"),("Algeria","DZ"),("American Samoa","AS"),("Andorra","AD"),("Angola","AO"),
+    ("Anguilla","AI"),("Antarctica","AQ"),("Antigua and Barbuda","AG"),("Argentina","AR"),
+    ("Armenia","AM"),("Aruba","AW"),("Australia","AU"),("Austria","AT"),("Azerbaijan","AZ"),
+    ("Bahamas","BS"),("Bahrain","BH"),("Bangladesh","BD"),("Barbados","BB"),("Belgium","BE"),
+    ("Belize","BZ"),("Benin","BJ"),("Bermuda","BM"),("Bhutan","BT"),("Bolivia","BO"),
+    ("Bosnia and Herzegovina","BA"),("Botswana","BW"),("Brazil","BR"),
+    ("British Indian Ocean Territory","IO"),("British Virgin Islands","VG"),("Brunei","BN"),
+    ("Bulgaria","BG"),("Burkina Faso","BF"),("Burundi","BI"),("Cabo Verde","CV"),
+    ("Cape Verde","CV"),("Cambodia","KH"),("Cameroon","CM"),("Canada","CA"),
+    ("Caribbean Netherlands","BQ"),("Cayman Islands","KY"),("Central African Republic","CF"),
+    ("Chad","TD"),("Chile","CL"),("Christmas Island","CX"),("Cocos Keeling Islands","CC"),
+    ("Colombia","CO"),("Comoros","KM"),("Cook Islands","CK"),("Costa Rica","CR"),
+    ("Ivory Coast","CI"),("Cote d'Ivoire","CI"),("Croatia","HR"),("Curacao","CW"),
+    ("Cyprus","CY"),("Czech Republic","CZ"),("Czechia","CZ"),
+    ("Democratic Republic of the Congo","CD"),("Denmark","DK"),("Djibouti","DJ"),
+    ("Dominica","DM"),("Dominican Republic","DO"),("Ecuador","EC"),("Egypt","EG"),
+    ("El Salvador","SV"),("Equatorial Guinea","GQ"),("Eritrea","ER"),("Estonia","EE"),
+    ("Eswatini","SZ"),("Ethiopia","ET"),("Falkland Islands Malvinas","FK"),
+    ("Falkland Islands Islas Malvinas","FK"),
+    ("Faroe Islands","FO"),("Fiji","FJ"),("Finland","FI"),("France","FR"),
+    ("French Guiana","GF"),("Gabon","GA"),("Gambia","GM"),("Georgia","GE"),("Germany","DE"),
+    ("Ghana","GH"),("Gibraltar","GI"),("Greece","GR"),("Greenland","GL"),("Grenada","GD"),
+    ("Guam","GU"),("Guatemala","GT"),("Guernsey","GG"),("Guinea","GN"),
+    ("Guinea-Bissau","GW"),("Guyana","GY"),("Haiti","HT"),
+    ("Heard Island and McDonald Islands","HM"),("Honduras","HN"),("Hungary","HU"),
+    ("Iceland","IS"),("India","IN"),("Indonesia","ID"),("Iraq","IQ"),("Ireland","IE"),
+    ("Isle of Man","IM"),("Israel","IL"),("Italy","IT"),("Jamaica","JM"),("Japan","JP"),
+    ("Jersey","JE"),("Jordan","JO"),("Kazakhstan","KZ"),("Kenya","KE"),("Kiribati","KI"),
+    ("Kosovo","XK"),("Kuwait","KW"),("Kyrgyzstan","KG"),("Laos","LA"),("Latvia","LV"),
+    ("Lebanon","LB"),("Lesotho","LS"),("Liberia","LR"),("Libya","LY"),
+    ("Liechtenstein","LI"),("Lithuania","LT"),("Luxembourg","LU"),("Madagascar","MG"),
+    ("Malawi","MW"),("Malaysia","MY"),("Maldives","MV"),("Mali","ML"),("Malta","MT"),
+    ("Marshall Islands","MH"),("Mauritania","MR"),("Mauritius","MU"),("Mexico","MX"),
+    ("Micronesia","FM"),("Moldova","MD"),("Monaco","MC"),("Mongolia","MN"),
+    ("Montenegro","ME"),("Montserrat","MS"),("Morocco","MA"),("Mozambique","MZ"),
+    ("Namibia","NA"),("Nauru","NR"),("Nepal","NP"),("Netherlands","NL"),
+    ("New Caledonia","NC"),("New Zealand","NZ"),("Nicaragua","NI"),("Niger","NE"),
+    ("Nigeria","NG"),("Niue","NU"),("Norfolk Island","NF"),("North Macedonia","MK"),
+    ("Northern Mariana Islands","MP"),("Norway","NO"),("Oman","OM"),("Pakistan","PK"),
+    ("Palau","PW"),("Palestine","PS"),("Panama","PA"),("Papua New Guinea","PG"),
+    ("Paraguay","PY"),("Peru","PE"),("Philippines","PH"),("Pitcairn Islands","PN"),
+    ("Poland","PL"),("Portugal","PT"),("Puerto Rico","PR"),("Qatar","QA"),
+    ("Republic of Cyprus","CY"),("Republic of the Congo","CG"),("Romania","RO"),
+    ("Rwanda","RW"),("Reunion","RE"),("Saint Barthelemy","BL"),
+    ("Saint Helena Ascension and Tristan da Cunha","SH"),("Saint Kitts and Nevis","KN"),
+    ("Saint Lucia","LC"),("Saint Pierre and Miquelon","PM"),
+    ("Saint Vincent and the Grenadines","VC"),("Samoa","WS"),("San Marino","SM"),
+    ("Sao Tome and Principe","ST"),("Saudi Arabia","SA"),("Senegal","SN"),("Serbia","RS"),
+    ("Seychelles","SC"),("Sierra Leone","SL"),("Singapore","SG"),("Slovakia","SK"),
+    ("Slovenia","SI"),("Solomon Islands","SB"),("Somalia","SO"),("South Africa","ZA"),
+    ("South Georgia and the South Sandwich Islands","GS"),("South Korea","KR"),
+    ("South Sudan","SS"),("Spain","ES"),("Sri Lanka","LK"),("Sudan","SD"),
+    ("Suriname","SR"),("Sweden","SE"),("Switzerland","CH"),("Syria","SY"),("Taiwan","TW"),
+    ("Tajikistan","TJ"),("Tanzania","TZ"),("Thailand","TH"),("Timor-Leste","TL"),
+    ("East Timor","TL"),("Togo","TG"),("Tokelau","TK"),("Tonga","TO"),
+    ("Trinidad and Tobago","TT"),("Tunisia","TN"),("Turkmenistan","TM"),
+    ("Turks and Caicos Islands","TC"),("Tuvalu","TV"),("Turkiye","TR"),("Turkey","TR"),
+    ("Uganda","UG"),("Ukraine","UA"),("United Arab Emirates","AE"),
+    ("United Kingdom","GB"),("Great Britain","GB"),("United States","US"),
+    ("United States Minor Outlying Islands","UM"),("Uruguay","UY"),
+    ("U.S. Virgin Islands","VI"),("US Virgin Islands","VI"),
+    ("Virgin Islands U.S.","VI"),("Uzbekistan","UZ"),("Vanuatu","VU"),
+    ("Vatican City","VA"),("Holy See","VA"),("Venezuela","VE"),("Vietnam","VN"),
+    ("Wallis and Futuna","WF"),("Western Sahara","EH"),("Yemen","YE"),("Zambia","ZM"),
+    ("Zimbabwe","ZW"),("Aland Islands","AX"),
+]
+
+
+def _norm_name(s):
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    s = s.replace("&", "and").lower()
+    s = re.sub(r"[^a-z0-9]+", " ", s).strip()
+    return re.sub(r"^the ", "", s)
+
+
+AI_LOOKUP = {_norm_name(n): iso for n, iso in AI_NAME2ISO}
+
+
+def load_ai_regions():
+    """ISO-2 set of regions where AI Studio is available; empty = check off."""
+    if not AI_CHECK:
+        return None
+    try:
+        req = urllib.request.Request(REGIONS_URL, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            html = r.read().decode("utf-8", "replace")
+        text = re.sub(r"<[^>]+>", " ", html)
+        i = text.find("are available in the following countries")
+        if i < 0:
+            raise ValueError("marker not found")
+        iso = set()
+        for piece in text[i:].split("*")[1:]:
+            n = re.split(r"[\n{%#]", piece)[0].strip()
+            code = AI_LOOKUP.get(_norm_name(n))
+            if code:
+                iso.add(code)
+        if len(iso) < 150:  # sanity: the real list has ~230 entries
+            raise ValueError("parsed only %d regions" % len(iso))
+        with open(AI_CACHE, "w") as f:
+            json.dump(sorted(iso), f)
+        return iso
+    except Exception as e:
+        if os.path.exists(AI_CACHE):
+            sys.stderr.write("[warn] regions page fetch failed (%s), using cache\n" % e)
+            return set(json.load(open(AI_CACHE)))
+        sys.stderr.write("[warn] regions page unavailable (%s) - AI region check disabled\n" % e)
+        return set()
+
+
+def check_ai(port):
+    """True (ok) / False (exit region blocked) / None (inconclusive -> keep)."""
+    try:
+        r = subprocess.run(["curl", "-s", "--socks5-hostname", "127.0.0.1:%d" % port,
+                            "-m", "10", TRACE_URL],
+                           capture_output=True, text=True, timeout=14)
+        if r.returncode != 0:
+            return None
+        m = re.search(r"^loc=([A-Za-z0-9]{2})$", r.stdout, re.M)
+        if not m:
+            return None
+        return m.group(1) in AI_OK
+    except Exception:
+        return None
 
 
 def read_lines(name):
@@ -252,7 +391,7 @@ def run_batch(batch):
             proc = None
             time.sleep(2)
         if proc is None or proc.poll() is not None:
-            return {line: None for line, _ in batch}
+            return {line: None for line, _ in batch}, set()
         with ThreadPoolExecutor(max_workers=CONC) as ex:
             futs = {ex.submit(test_port, BASE_PORT + i): line for i, (line, _) in enumerate(batch)}
             for f in as_completed(futs):
@@ -264,6 +403,16 @@ def run_batch(batch):
             ok, lat = test_port(BASE_PORT + i)
             if ok:
                 res[line] = lat
+        # AI Studio region gate: exit country must be supported
+        ai_dead = set()
+        if AI_OK:
+            with ThreadPoolExecutor(max_workers=min(CONC, 100)) as ex:
+                futs = {ex.submit(check_ai, BASE_PORT + i): line
+                        for i, (line, _) in enumerate(batch) if res.get(line) is not None}
+                for f in as_completed(futs):
+                    if f.result() is False:
+                        res[futs[f]] = None
+                        ai_dead.add(futs[f])
     finally:
         if proc is not None:
             proc.terminate()
@@ -272,7 +421,7 @@ def run_batch(batch):
         for p in (cfg_path, err_path):
             try: os.remove(p)
             except OSError: pass
-    return res
+    return res, ai_dead
 
 
 def main():
@@ -327,13 +476,23 @@ def main():
         print("invalid-config total: %d" % sum(1 for v in unconv.values() if v == "invalid-config"))
         return
 
+    regions = load_ai_regions()
+    if regions:
+        AI_OK.update(regions)
+        print("ai-studio region check: ON (%d supported regions)" % len(AI_OK))
+    else:
+        print("ai-studio region check: OFF")
+
     ok_lat, group_of = {}, {}
     for i in range(0, len(entries), BATCH):
         chunk = entries[i:i + BATCH]
         print("batch %d-%d ..." % (i, i + len(chunk)))
-        for line, lat in run_batch([(l, ob) for l, _, ob in chunk]).items():
+        rb_res, rb_ai = run_batch([(l, ob) for l, _, ob in chunk])
+        for line, lat in rb_res.items():
             if lat is not None:
                 ok_lat[line] = lat
+        for l in rb_ai:
+            unconv[l] = "region-blocked"
         for l, g, _ in chunk:
             if l in ok_lat:
                 group_of[l] = g
