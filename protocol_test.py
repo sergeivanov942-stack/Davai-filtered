@@ -26,7 +26,7 @@ except Exception: pass
 SRC_DIR = sys.argv[1] if len(sys.argv) > 1 else "."
 SB_BIN = os.environ.get("SING_BOX_BIN") or ("sing-box.exe" if os.name == "nt" else "sing-box")
 TIMEOUT = float(os.environ.get("E2E_TIMEOUT", "5"))
-BATCH = int(os.environ.get("E2E_BATCH", "1000"))
+BATCH = int(os.environ.get("E2E_BATCH", "300"))
 CONC = int(os.environ.get("E2E_CONCURRENCY", "200"))
 BASE_PORT = int(os.environ.get("E2E_BASE_PORT", "20000"))
 LIMIT = int(os.environ.get("E2E_LIMIT", "0"))
@@ -188,6 +188,35 @@ def wait_ready(port, proc, tmo=10):
     return False
 
 
+def check_one(ob):
+    """True if sing-box accepts this outbound (config-level validation)."""
+    cfg = {"log": {"level": "error"},
+           "inbounds": [{"type": "socks", "tag": "chk", "listen": "127.0.0.1", "listen_port": 1}],
+           "outbounds": [dict(ob, tag="chk")]}
+    fd, p = tempfile.mkstemp(suffix=".json")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(cfg, f)
+        r = subprocess.run([SB_BIN, "check", "-c", p], capture_output=True, text=True, timeout=20)
+        return r.returncode == 0
+    except Exception:
+        return False
+    finally:
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+
+
+def start_sb(cfg_path, err_path):
+    ef = open(err_path, "wb")
+    try:
+        return subprocess.Popen([SB_BIN, "run", "-c", cfg_path],
+                                stdout=subprocess.DEVNULL, stderr=ef)
+    finally:
+        ef.close()
+
+
 def run_batch(batch):
     """batch: list of (line, outbound). Returns {line: latency or None}."""
     n = len(batch)
@@ -203,14 +232,26 @@ def run_batch(batch):
     fd, cfg_path = tempfile.mkstemp(suffix=".json")
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump(cfg, f)
+    fd, err_path = tempfile.mkstemp(suffix=".log")
+    os.close(fd)
     res = {}
-    proc = subprocess.Popen([SB_BIN, "run", "-c", cfg_path],
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    proc = None
     try:
-        if not wait_ready(BASE_PORT, proc):
-            sys.stderr.write("[warn] sing-box did not start (batch of %d)\n" % n)
-            try: sys.stderr.write(open(cfg_path, encoding="utf-8").read()[:2000] + "\n")
-            except Exception: pass
+        for attempt in (1, 2):  # one restart in case of transient port issues
+            proc = start_sb(cfg_path, err_path)
+            if wait_ready(BASE_PORT, proc):
+                break
+            tail = ""
+            try:
+                tail = open(err_path, "r", encoding="utf-8", errors="replace").read()[-400:]
+            except Exception:
+                pass
+            sys.stderr.write("[warn] sing-box did not start (attempt %d, batch of %d): %s\n"
+                             % (attempt, n, tail.replace("\n", " | ")))
+            proc.kill()
+            proc = None
+            time.sleep(2)
+        if proc is None or proc.poll() is not None:
             return {line: None for line, _ in batch}
         with ThreadPoolExecutor(max_workers=CONC) as ex:
             futs = {ex.submit(test_port, BASE_PORT + i): line for i, (line, _) in enumerate(batch)}
@@ -224,10 +265,13 @@ def run_batch(batch):
             if ok:
                 res[line] = lat
     finally:
-        proc.terminate()
-        try: proc.wait(3)
-        except Exception: proc.kill()
-        os.remove(cfg_path)
+        if proc is not None:
+            proc.terminate()
+            try: proc.wait(3)
+            except Exception: proc.kill()
+        for p in (cfg_path, err_path):
+            try: os.remove(p)
+            except OSError: pass
     return res
 
 
@@ -264,6 +308,23 @@ def main():
     if CONVERT_ONLY:
         from collections import Counter
         print("unconvert reasons:", Counter(unconv.values()))
+        return
+
+    # config-level validation: one bad outbound would kill the whole batch process
+    print("checking %d configs with sing-box check ..." % len(entries))
+    valid_entries = []
+    with ThreadPoolExecutor(max_workers=32) as ex:
+        futs = {ex.submit(check_one, ob): (line, g, ob) for line, g, ob in entries}
+        for f in as_completed(futs):
+            line, g, ob = futs[f]
+            if f.result():
+                valid_entries.append((line, g, ob))
+            else:
+                unconv[line] = "invalid-config"
+    entries = valid_entries
+    print("after check: %d valid" % len(entries))
+    if os.environ.get("E2E_CHECK_ONLY", "") == "1":
+        print("invalid-config total: %d" % sum(1 for v in unconv.values() if v == "invalid-config"))
         return
 
     ok_lat, group_of = {}, {}
