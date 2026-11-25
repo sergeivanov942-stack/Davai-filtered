@@ -429,7 +429,7 @@ def run_batch(batch):
         # AI Studio region gate: exit country must be supported
         ai_dead = set()
         if AI_OK:
-            with ThreadPoolExecutor(max_workers=min(CONC, 100)) as ex:
+            with ThreadPoolExecutor(max_workers=CONC) as ex:
                 futs = {ex.submit(check_ai, BASE_PORT + i): line
                         for i, (line, _) in enumerate(batch) if res.get(line) is not None}
                 for f in as_completed(futs):
