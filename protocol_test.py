@@ -579,7 +579,10 @@ def main():
                                   for i, t in enumerate(tiers) if t))
     write("clean11.txt", passed["us"])
     write("clean12.txt", passed["blocked"])
-    write("clean13.txt", passed["ru"] + region_blocked)  # RU + Google-blocked: chain entries
+    # sources mislabel RU servers with foreign flags - tag them explicitly
+    def ru_tag(line):
+        return line if line.rstrip().endswith("[RU]") else line.rstrip() + " [RU]"
+    write("clean13.txt", [ru_tag(l) for l in passed["ru"] + region_blocked])
     print("region-blocked moved to clean13: %d" % len(region_blocked))
     write("dead.txt", dead)
 
