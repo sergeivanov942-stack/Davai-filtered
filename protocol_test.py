@@ -9,7 +9,7 @@ Usage:
     python protocol_test.py [source_dir]   # default: current dir
 Env:
     SING_BOX_BIN   path to sing-box binary (default: ./sing-box or sing-box.exe)
-    E2E_TIMEOUT    seconds per request (default 5)
+    E2E_TIMEOUT    seconds per request (default 3)
     E2E_BATCH      configs per sing-box process (default 1000)
     E2E_CONCURRENCY parallel curl workers (default 200)
     E2E_BASE_PORT  first local socks port (default 20000)
@@ -28,7 +28,7 @@ except Exception: pass
 
 SRC_DIR = sys.argv[1] if len(sys.argv) > 1 else "."
 SB_BIN = os.environ.get("SING_BOX_BIN") or ("sing-box.exe" if os.name == "nt" else "sing-box")
-TIMEOUT = float(os.environ.get("E2E_TIMEOUT", "5"))
+TIMEOUT = float(os.environ.get("E2E_TIMEOUT", "3"))
 BATCH = int(os.environ.get("E2E_BATCH", "300"))
 CONC = int(os.environ.get("E2E_CONCURRENCY", "200"))
 BASE_PORT = int(os.environ.get("E2E_BASE_PORT", "20000"))
