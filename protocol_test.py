@@ -20,7 +20,7 @@ Env:
                    by Google AI Studio (default 1)
 """
 import os, re, sys, json, time, socket, shutil, subprocess, tempfile, urllib.parse
-import urllib.request, unicodedata
+import urllib.request, unicodedata, datetime, hashlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 try: sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -162,19 +162,29 @@ def load_ai_regions():
 
 
 def check_ai(port):
-    """True (ok) / False (exit region blocked) / None (inconclusive -> keep)."""
-    try:
-        r = subprocess.run(["curl", "-s", "--socks5-hostname", "127.0.0.1:%d" % port,
-                            "-m", "10", TRACE_URL],
-                           capture_output=True, text=True, timeout=14)
-        if r.returncode != 0:
-            return None
-        m = re.search(r"^loc=([A-Za-z0-9]{2})$", r.stdout, re.M)
-        if not m:
-            return None
-        return m.group(1) in AI_OK
-    except Exception:
-        return None
+    """True (ok) / False (blocked) / None (inconclusive -> keep).
+
+    Multi-sample: normal resolve + forced IPv4 + forced IPv6. Some servers
+    (CDN-fronted) rotate exit IPs per destination, one lucky sample is not
+    enough - ANY sample in an unsupported region marks the server blocked."""
+    verdicts = 0
+    for extra in ([], ["-4"], ["-6"]):
+        try:
+            r = subprocess.run(["curl", "-s"] + extra +
+                               ["--socks5-hostname", "127.0.0.1:%d" % port,
+                                "-m", "10", TRACE_URL],
+                               capture_output=True, text=True, timeout=14)
+            if r.returncode != 0:
+                continue
+            m = re.search(r"^loc=([A-Za-z0-9]{2})$", r.stdout, re.M)
+            if not m:
+                continue
+            if m.group(1) not in AI_OK:
+                return False  # any single sample outside supported regions
+            verdicts += 1
+        except Exception:
+            continue
+    return True if verdicts else None
 
 
 def read_lines(name):
@@ -183,6 +193,19 @@ def read_lines(name):
         return []
     with open(p, encoding="utf-8") as f:
         return [l.rstrip("\n") for l in f if l.strip()]
+
+
+def load_history():
+    """Reliability records keyed by stable config hash: {hkey: {rec:[0/1...], last:iso}}."""
+    try:
+        return json.load(open(os.path.join(SRC_DIR, "history.json"), encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def save_history(h):
+    with open(os.path.join(SRC_DIR, "history.json"), "w", encoding="utf-8") as f:
+        json.dump(h, f, ensure_ascii=False)
 
 
 def parse_query(qs):
@@ -443,7 +466,7 @@ def main():
     # global dedup: first group wins; identical outbounds (same params, other
     # remark) are tested once
     seen, entries, unconv = {}, [], {}
-    ob_seen, ob_dup = {}, set()
+    ob_seen, ob_dup, line_key = {}, set(), {}
     for g in ("main", "us", "blocked", "ru"):
         for line in groups[g]:
             if line in seen:
@@ -459,6 +482,7 @@ def main():
                 continue
             ob_seen[key] = line
             entries.append((line, g, ob))
+            line_key[line] = hashlib.sha1(key.encode()).hexdigest()[:16]  # stable config id
     print("converted %d, duplicates skipped %d, unconvertible %d"
           % (len(entries), len(ob_dup), len(unconv)))
     if CONVERT_ONLY:
@@ -514,15 +538,34 @@ def main():
     if len(entries) > 20 and tested_ok == 0:
         sys.exit("[abort] 0 of %d configs passed - likely local network/core problem, files untouched" % len(entries))
 
+    # update reliability history: one record per unique config (stable across remark edits)
+    today = datetime.date.today().isoformat()
+    hist = load_history()
+    for line, hkey in line_key.items():
+        rec = hist.setdefault(hkey, {"rec": [], "last": today})
+        rec["rec"] = (rec.get("rec") or [])[-19:] + [1 if line in ok_lat else 0]
+        rec["last"] = today
+    cutoff = (datetime.date.today() - datetime.timedelta(days=45)).isoformat()
+    hist = {k: v for k, v in hist.items() if v.get("last", "") >= cutoff}
+    save_history(hist)
+
+    def rel(line):
+        r = hist.get(line_key.get(line, ""), {}).get("rec")
+        return sum(r) / len(r) if r else 0.5  # unknown -> middle
+
     def write(name, lines):
         with open(os.path.join(SRC_DIR, name), "w", encoding="utf-8") as f:
             f.write("\n".join(sorted(lines)) + ("\n" if lines else ""))
 
-    al = sorted(passed["main"])
+    # tier files: clean1 = most reliable (best pass rate, then lowest latency) ... clean10 = flakiest
+    al = sorted(passed["main"], key=lambda l: (-rel(l), ok_lat.get(l, 99.0)))
     if al:
         n = (len(al) + 9) // 10
-        for i in range(10):
-            write("clean%d.txt" % (i + 1), al[i * n:(i + 1) * n])
+        tiers = [al[i * n:(i + 1) * n] for i in range(10)]
+        for i, part in enumerate(tiers):
+            write("clean%d.txt" % (i + 1), part)
+        print("tiers:", "  ".join("%d:%d/%.0f%%" % (i + 1, len(t), 100 * sum(rel(l) for l in t) / len(t))
+                                  for i, t in enumerate(tiers) if t))
     write("clean11.txt", passed["us"])
     write("clean12.txt", passed["blocked"])
     write("clean13.txt", passed["ru"])
