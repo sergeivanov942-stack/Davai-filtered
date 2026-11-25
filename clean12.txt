@@ -1,2 +1,0 @@
-vless://89be587f-0e93-4c67-822e-98ad0a56c29e@103.119.15.175:443/?type=tcp&encryption=none&flow=xtls-rprx-vision&sni=www.amazon.com&fp=chrome&security=reality&pbk=vQgrNIQTmbTIqtauDixzp2ePvd-aK_zlTctIDRPk3wQ&sid=ce90a4459f024897&packetEncoding=xudp#%5BOpenRay%5D%20%F0%9F%87%BA%F0%9F%87%B8US-200
-vless://89be587f-0e93-4c67-822e-98ad0a56c29e@103.119.15.175:443/?type=tcp&encryption=none&flow=xtls-rprx-vision&sni=www.amazon.com&fp=firefox&security=reality&pbk=vQgrNIQTmbTIqtauDixzp2ePvd-aK_zlTctIDRPk3wQ&sid=ce90a4459f024897#%5BOpenRay%5D%20%F0%9F%87%BA%F0%9F%87%B8US-229
