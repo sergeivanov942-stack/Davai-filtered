@@ -440,8 +440,10 @@ def main():
     if LIMIT:
         groups = {g: ls[:LIMIT] for g, ls in groups.items()}
 
-    # global dedup: first group wins
+    # global dedup: first group wins; identical outbounds (same params, other
+    # remark) are tested once
     seen, entries, unconv = {}, [], {}
+    ob_seen, ob_dup = {}, set()
     for g in ("main", "us", "blocked", "ru"):
         for line in groups[g]:
             if line in seen:
@@ -450,10 +452,15 @@ def main():
             ob, why = convert(line)
             if ob is None:
                 unconv[line] = why
-            else:
-                entries.append((line, g, ob))
-
-    print("converted %d, unconvertible %d" % (len(entries), len(unconv)))
+                continue
+            key = json.dumps(ob, sort_keys=True)
+            if key in ob_seen:
+                ob_dup.add(line)  # duplicate config, skip the test
+                continue
+            ob_seen[key] = line
+            entries.append((line, g, ob))
+    print("converted %d, duplicates skipped %d, unconvertible %d"
+          % (len(entries), len(ob_dup), len(unconv)))
     if CONVERT_ONLY:
         from collections import Counter
         print("unconvert reasons:", Counter(unconv.values()))
@@ -500,7 +507,7 @@ def main():
     passed = {g: [] for g in groups}
     for l, g in group_of.items():
         passed[g].append(l)
-    dead = sorted(set(unconv) | (seen.keys() - ok_lat.keys()))
+    dead = sorted((set(unconv) | (seen.keys() - ok_lat.keys())) - ob_dup)
 
     # safety: don't wipe lists if nothing passed at all (network/core failure)
     tested_ok = len(ok_lat)
