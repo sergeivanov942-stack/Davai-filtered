@@ -20,6 +20,8 @@ jobs:
           ls -lh GeoLite2-*.mmdb
       - run: python filter.py
       - name: End-to-end protocol test (sing-box, same core as Karing)
+        env:
+          E2E_RETRY: "0"  # nightly run is fast mode; local .bat keeps the retry
         run: |
           SB_VER=$(curl -fsSL https://api.github.com/repos/SagerNet/sing-box/releases/latest | python -c "import sys,json;print(json.load(sys.stdin)['tag_name'].lstrip('v'))")
           echo "sing-box ${SB_VER}"
