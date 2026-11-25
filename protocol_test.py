@@ -423,7 +423,7 @@ def run_batch(batch):
         with ThreadPoolExecutor(max_workers=CONC) as ex:
             futs = {ex.submit(test_port, BASE_PORT + i,
                               RU_URL if g == "ru" else TEST_URL,
-                              TIMEOUT + 2 if g == "ru" else TIMEOUT): line
+                              TIMEOUT): line
                     for i, (line, g, _) in enumerate(batch)}
             for f in as_completed(futs):
                 ok, lat = f.result()
@@ -432,9 +432,7 @@ def run_batch(batch):
         if RETRY:
             retry = [(i, g, line) for i, (line, g, _) in enumerate(batch) if res.get(line) is None]
             for i, g, line in retry:
-                ok, lat = test_port(BASE_PORT + i,
-                                    RU_URL if g == "ru" else TEST_URL,
-                                    TIMEOUT + 2 if g == "ru" else TIMEOUT)
+                ok, lat = test_port(BASE_PORT + i, RU_URL if g == "ru" else TEST_URL, TIMEOUT)
                 if ok:
                     res[line] = lat
         # AI Studio region gate: exit country must be supported (group "ru" exempt)
