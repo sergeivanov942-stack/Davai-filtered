@@ -520,7 +520,7 @@ def main():
     else:
         print("ai-studio region check: OFF")
 
-    ok_lat, group_of = {}, {}
+    ok_lat, group_of, region_blocked = {}, {}, []
     for i in range(0, len(entries), BATCH):
         chunk = entries[i:i + BATCH]
         print("batch %d-%d ..." % (i, i + len(chunk)))
@@ -528,8 +528,7 @@ def main():
         for line, lat in rb_res.items():
             if lat is not None:
                 ok_lat[line] = lat
-        for l in rb_ai:
-            unconv[l] = "region-blocked"
+        region_blocked += rb_ai  # alive, but Google-blocked exit -> clean13 (chain entry)
         for l, g, _ in chunk:
             if l in ok_lat:
                 group_of[l] = g
@@ -537,7 +536,7 @@ def main():
     passed = {g: [] for g in groups}
     for l, g in group_of.items():
         passed[g].append(l)
-    dead = sorted((set(unconv) | (seen.keys() - ok_lat.keys())) - ob_dup)
+    dead = sorted((set(unconv) | (seen.keys() - ok_lat.keys())) - ob_dup - set(region_blocked))
 
     # safety: don't wipe lists if nothing passed at all (network/core failure)
     tested_ok = len(ok_lat)
@@ -549,7 +548,7 @@ def main():
     hist = load_history()
     for line, hkey in line_key.items():
         rec = hist.setdefault(hkey, {"rec": [], "last": today})
-        rec["rec"] = (rec.get("rec") or [])[-19:] + [1 if line in ok_lat else 0]
+        rec["rec"] = (rec.get("rec") or [])[-19:] + [1 if line in ok_lat or line in region_blocked else 0]
         rec["last"] = today
     cutoff = (datetime.date.today() - datetime.timedelta(days=45)).isoformat()
     hist = {k: v for k, v in hist.items() if v.get("last", "") >= cutoff}
@@ -574,7 +573,8 @@ def main():
                                   for i, t in enumerate(tiers) if t))
     write("clean11.txt", passed["us"])
     write("clean12.txt", passed["blocked"])
-    write("clean13.txt", passed["ru"])
+    write("clean13.txt", passed["ru"] + region_blocked)  # RU + Google-blocked: chain entries
+    print("region-blocked moved to clean13: %d" % len(region_blocked))
     write("dead.txt", dead)
 
     from collections import Counter
