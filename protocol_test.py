@@ -164,11 +164,11 @@ def load_ai_regions():
 def check_ai(port):
     """True (ok) / False (blocked) / None (inconclusive -> keep).
 
-    Multi-sample: normal resolve + forced IPv4 + forced IPv6. Some servers
-    (CDN-fronted) rotate exit IPs per destination, one lucky sample is not
-    enough - ANY sample in an unsupported region marks the server blocked."""
+    Two samples: normal resolve + forced IPv4. Some servers (CDN-fronted)
+    rotate exit IPs per destination - one lucky sample is not enough:
+    ANY sample in an unsupported region marks the server blocked."""
     verdicts = 0
-    for extra in ([], ["-4"], ["-6"]):
+    for extra in ([], ["-4"]):
         try:
             r = subprocess.run(["curl", "-s"] + extra +
                                ["--socks5-hostname", "127.0.0.1:%d" % port,
